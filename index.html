@@ -1,0 +1,277 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+                      "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <!--
+      -- Copyright (c) 2014 Markus Gutschke
+      --
+      -- Permission is hereby granted, free of charge, to any person obtaining a
+      -- copy of this software and associated documentation files (the
+      -- "Software"), to deal in the Software without restriction, including
+      -- without limitation the rights to use, copy, modify, merge, publish,
+      -- distribute, sublicense, and/or sell copies of the Software, and to
+      -- permit persons to whom the Software is furnished to do so, subject to
+      -- the following conditions:
+      --
+      -- The above copyright notice and this permission notice shall be included
+      -- in all copies or substantial portions of the Software.
+      --
+      -- THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+      -- OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+      -- MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+      -- IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+      -- CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+      -- TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+      -- SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+      -->
+    <script src="u2f-api.js"></script>
+    <title>U2F Test</title>
+    <style>
+      body {
+        font-family: sans-serif;
+      }
+      #message {
+        display: none;
+        font-weight: bold;
+      }
+    </style>
+    <script>
+      // This is a very basic demonstration page showing how to interact with
+      // FIDO U2F tokens from the browser. At this time, only Chrome
+      // (version 41 and above) is supported.
+      // N.B. as this is a demo, it prints lots of informational messages to the
+      // browser's debugging console. In production use, that code should of
+      // course be removed.
+      demo = (function() {
+
+        // Update the informational status message that is displayed for
+        // the user's benefit. The "m" parameter is optional; if omitted, it
+        // removes the message altogether.
+        var updateMessage = function(m) {
+          var msg = document.getElementById('message');
+          if (m) {
+            msg.textContent = m;
+            msg.style.display = 'block';
+          } else {
+            msg.style.display = '';
+          }
+        };
+
+        // The server completed the final step in the registration process for
+        // a new FIDO U2F token.
+        var registrationCompleted = function(reply) {
+          console.log("registrationCompleted()");
+          console.log(reply);
+          updateMessage('Registration succeeded. ' + (reply.msg || ''));
+        };
+
+        // The server completed the final stepped in authenticating the user.
+        // We are now logged in. N.B. this demo page doesn't actually implement
+        // any form of session management; so "being logged in" doesn't actually
+        // mean much.
+        var loginCompleted = function(reply) {
+          console.log("loginCompleted()");
+          console.log(reply);
+          updateMessage('Login successful. ' + (reply.msg || ''));
+        };
+
+        // We sent an XMLHttpRequest to the server, but all we got back was an
+        // error message. Show the human-readable message on the web page.
+        var requestFailed = function(login) {
+          return function(reply) {
+            console.log("requestFailed()");
+            updateMessage((login ? 'Login' : 'Registration') + ' failed. ' +
+                          (reply.msg || ''));
+          };
+        };
+
+        // Creates a closure that can be hooked up the onreadystatechange event
+        // for an XMLHttpRequest. The closure will invoke the "ok" method, if
+        // the server informs us that the request succeeded; otherwise, the
+        // "fail" method is invoked. The "reply" parameter should be a reference
+        // to the XMLHttpRequest object.
+        var handleReply = function(ok, fail, reply) {
+          return function() {
+            if (reply.readyState === 4) {
+              console.log("handleReply(" + reply.status + ", \"" +
+                          reply.responseText + "\")");
+              if (reply.status === 200) {
+                try {
+                  var obj = JSON.parse(reply.responseText);
+                } catch (e) {
+                  return fail({
+                    status: 'error',
+                    msg:    'Invalid reply from server',
+                  });
+                }
+                if (obj.status === 'ok') {
+                  ok(obj);
+                } else {
+                  fail(obj);
+                }
+              } else {
+                fail({
+                  status: 'error',
+                  msg:    reply.responseText,
+                });
+              }
+            }
+          };
+        };
+
+        // The FIDO U2F hardware token completed its part of the registration
+        // process. It answered by sending a new "key handle" back to the
+        // browser. We will now go ahead and register this key handle with the
+        // server.
+        var newKeyhandleReceived = function(response) {
+          console.log("newKeyhandleReceived(\"" +
+                      JSON.stringify(response) + "\")");
+          switch (response.errorCode) {
+            case 1: return updateMessage('Registration failed.');
+            case 2: return updateMessage('Bad registration request.');
+            case 3: return updateMessage('Configuration unsupported.');
+            case 4: return updateMessage('Token already registered.');
+            case 5: return updateMessage('Registration timed out.');
+          }
+          if (response.appId != window.document.location.origin) {
+            return updateMessage('Mismatched origin.');
+          }
+          updateMessage();
+          var http = new XMLHttpRequest();
+          http.onreadystatechange =
+            handleReply(registrationCompleted, requestFailed(false), http);
+          http.open('POST', '/u2f/register');
+          http.setRequestHeader('Content-Type',
+                                'application/json;charset=UTF-8');
+          http.send(JSON.stringify(response));
+        };
+
+        // The FIDO U2F hardware token completed its part of the user
+        // authentication (aka login) process. It answered by signing the
+        // challenge that the server generated earlier. We will now go ahead
+        // and forward this signature to the server.
+        var signedChallengeReceived = function(response) {
+          console.log("signedChallengeReceived(\"" +
+                      JSON.stringify(response) + "\")");
+          switch (response.errorCode) {
+            case 1: return updateMessage('Login failed.');
+            case 2: return updateMessage('Bad login request.');
+            case 3: return updateMessage('Configuration unsupported.');
+            case 4: return updateMessage('Unknown U2F token.');
+            case 5: return updateMessage('Login timed out.');
+          }
+          updateMessage();
+          var http = new XMLHttpRequest();
+          http.onreadystatechange =
+            handleReply(loginCompleted, requestFailed(true), http);
+          http.open('POST', '/u2f/authenticate');
+          http.setRequestHeader('Content-Type',
+                                'application/json;charset=UTF-8');
+          http.send(JSON.stringify(response));
+        };
+
+        // Both token registration and user authentication (aka login) start
+        // with asking the server for a randomly generated challenge. This
+        // method gets called once we have received the challenge from the
+        // server. We will now go ahead and ask the FIDO U2F token to act on
+        // the challenge. If "login" is false, the caller requested registration
+        // of a new hardware token; if "login" is true, the caller requested
+        // for the user to be authenticated.
+        var serverChallengeReceived = function(login) {
+          return function(reply) {
+            console.log("serverChallengeReceived(\"" +
+                        JSON.stringify(reply) + "\")");
+            if (window.document.location.origin !== reply.appId) {
+              return updateMessage('Mismatched origin.');
+            }
+            var registerRequest = {
+              version:   'U2F_V2',
+              challenge: reply.challenge,
+              appId:     reply.appId,
+            };
+            var signRequests = [ ];
+            for (var i = 0; i < reply.keyHandles.length; ++i) {
+              signRequests.push({
+                version:   'U2F_V2',
+                challenge: reply.challenge,
+                appId:     reply.appId,
+                keyHandle: reply.keyHandles[i],
+              });
+            }
+            updateMessage(
+              'Insert U2F token now, and if it has a button, push it.');
+            try {
+              if (login) {
+                u2f.sign(signRequests, signedChallengeReceived);
+              } else {
+                u2f.register([ registerRequest ], signRequests,
+                             newKeyhandleReceived);
+              }
+            } catch (e) {
+              console.log(e);
+              console.log(e.name);
+              if (e.name === 'ReferenceError') {
+                updateMessage('Failed to communicate with U2F token. Upgrade ' +
+                              'browser to Google Chrome version 41+ and try ' +
+                              'again.');
+              } else updateMessage('Unknown error.');
+            }
+          };
+        };
+
+        // Ask the server for a randomly generated challenge. Then set up
+        // suitable callback handlers to complete the FIDO U2F operation.
+        // If "login" is false, the caller requested registration of a new
+        // hardware token; if "login" is true, the caller requested for the user
+        // to be authenticated.
+        var getChallenge = function(login) {
+          console.log("getChallenge(" + login + ")");
+          var credentials = {
+            authenticate: login,
+            user:         document.getElementById('user').value,
+            password:     document.getElementById('password').value,
+          };
+          var http = new XMLHttpRequest();
+          http.onreadystatechange =
+            handleReply(serverChallengeReceived(login), requestFailed(login),
+                        http);
+          http.open('POST', '/u2f/challenge');
+          http.setRequestHeader('Content-Type',
+                                'application/json;charset=UTF-8');
+          http.send(JSON.stringify(credentials));
+        };
+
+        var that = {
+          // The "demo" object exports two public methods. You can "register()"
+          // a new FIDO U2F token with the server, and you can "authenticate()"
+          // a user, so that the server allows them to log in.
+          register: function() {
+            return getChallenge(false);
+          },
+
+          authenticate: function() {
+            return getChallenge(true);
+          },
+
+        };
+        return that;
+      })();
+    </script>
+  </head>
+  <body>
+    <table>
+      <tr><th align="right">User</th>
+          <td><input type="text" value="" id="user" /></td></tr>
+      <tr><th align="right">Password</th>
+          <td><input type="password" value="" id="password" /></td></tr>
+      <tr><td colspan="2">
+          <input type="button" value="Register" onclick="demo.register()" />
+          <input type="button" value="Authenticate"
+                 onclick="demo.authenticate()" />
+          </td></tr>
+    </table>
+    <pre id="message"></pre>
+  </body>
+</html>
